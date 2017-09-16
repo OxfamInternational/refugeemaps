@@ -1,0 +1,502 @@
+<html>
+<head>
+  <title>refugee map</title>
+</head>
+<body>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.3/d3.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/1.6.9/topojson.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/datamaps/0.5.8/datamaps.world.min.js"></script>
+  <script>
+
+  $(document).ready(function() {
+
+    function Zoom(args) {
+      $.extend(this, {
+        $buttons:   $(".zoom-button"),
+        $info:      $("#zoom-info"),
+        scale:      { max: 50, currentShift: 0 },
+        $container: args.$container,
+        datamap:    args.datamap
+      });
+
+      this.init();
+    }
+
+    Zoom.prototype.init = function() {
+      var paths = this.datamap.svg.selectAll("path"),
+          subunits = this.datamap.svg.selectAll(".datamaps-subunit");
+
+      // preserve stroke thickness
+      paths.style("vector-effect", "non-scaling-stroke");
+
+      // disable click on drag end
+      subunits.call(
+        d3.behavior.drag().on("dragend", function() {
+          d3.event.sourceEvent.stopPropagation();
+        })
+      );
+
+      this.scale.set = this._getScalesArray();
+      this.d3Zoom = d3.behavior.zoom().scaleExtent([ 1, this.scale.max ]);
+
+      this._displayPercentage(1);
+      this.listen();
+    };
+
+    Zoom.prototype.listen = function() {
+      this.$buttons.off("click").on("click", this._handleClick.bind(this));
+
+      this.datamap.svg
+        .call(this.d3Zoom.on("zoom", this._handleScroll.bind(this)))
+        .on("dblclick.zoom", null); // disable zoom on double-click
+    };
+
+    Zoom.prototype.reset = function() {
+      this._shift("reset");
+    };
+
+    Zoom.prototype._handleScroll = function() {
+      var translate = d3.event.translate,
+          scale = d3.event.scale,
+          limited = this._bound(translate, scale);
+
+      this.scrolled = true;
+
+      this._update(limited.translate, limited.scale);
+    };
+
+    Zoom.prototype._handleClick = function(event) {
+      var direction = $(event.target).data("zoom");
+
+      this._shift(direction);
+    };
+
+    Zoom.prototype._shift = function(direction) {
+      var center = [ this.$container.width() / 2, this.$container.height() / 2 ],
+          translate = this.d3Zoom.translate(), translate0 = [], l = [],
+          view = {
+            x: translate[0],
+            y: translate[1],
+            k: this.d3Zoom.scale()
+          }, bounded;
+
+      translate0 = [
+        (center[0] - view.x) / view.k,
+        (center[1] - view.y) / view.k
+      ];
+
+    	if (direction == "reset") {
+      	view.k = 1;
+        this.scrolled = true;
+      } else {
+      	view.k = this._getNextScale(direction);
+      }
+
+    l = [ translate0[0] * view.k + view.x, translate0[1] * view.k + view.y ];
+
+      view.x += center[0] - l[0];
+      view.y += center[1] - l[1];
+
+      bounded = this._bound([ view.x, view.y ], view.k);
+
+      this._animate(bounded.translate, bounded.scale);
+    };
+
+    Zoom.prototype._bound = function(translate, scale) {
+      var width = this.$container.width(),
+          height = this.$container.height();
+
+      translate[0] = Math.min(
+        (width / height)  * (scale - 1),
+        Math.max( width * (1 - scale), translate[0] )
+      );
+
+      translate[1] = Math.min(0, Math.max(height * (1 - scale), translate[1]));
+
+      return { translate: translate, scale: scale };
+    };
+
+    Zoom.prototype._update = function(translate, scale) {
+      this.d3Zoom
+        .translate(translate)
+        .scale(scale);
+
+      this.datamap.svg.selectAll("g")
+        .attr("transform", "translate(" + translate + ")scale(" + scale + ")");
+
+      this._displayPercentage(scale);
+    };
+
+    Zoom.prototype._animate = function(translate, scale) {
+      var _this = this,
+          d3Zoom = this.d3Zoom;
+
+      d3.transition().duration(350).tween("zoom", function() {
+        var iTranslate = d3.interpolate(d3Zoom.translate(), translate),
+            iScale = d3.interpolate(d3Zoom.scale(), scale);
+
+    		return function(t) {
+          _this._update(iTranslate(t), iScale(t));
+        };
+      });
+    };
+
+    Zoom.prototype._displayPercentage = function(scale) {
+      var value;
+
+      value = Math.round(Math.log(scale) / Math.log(this.scale.max) * 100);
+      this.$info.text(value + "%");
+    };
+
+    Zoom.prototype._getScalesArray = function() {
+      var array = [],
+          scaleMaxLog = Math.log(this.scale.max);
+
+      for (var i = 0; i <= 10; i++) {
+        array.push(Math.pow(Math.E, 0.1 * i * scaleMaxLog));
+      }
+
+      return array;
+    };
+
+    Zoom.prototype._getNextScale = function(direction) {
+      var scaleSet = this.scale.set,
+          currentScale = this.d3Zoom.scale(),
+          lastShift = scaleSet.length - 1,
+          shift, temp = [];
+
+      if (this.scrolled) {
+
+        for (shift = 0; shift <= lastShift; shift++) {
+          temp.push(Math.abs(scaleSet[shift] - currentScale));
+        }
+
+        shift = temp.indexOf(Math.min.apply(null, temp));
+
+        if (currentScale >= scaleSet[shift] && shift < lastShift) {
+          shift++;
+        }
+
+        if (direction == "out" && shift > 0) {
+          shift--;
+        }
+
+        this.scrolled = false;
+
+      } else {
+
+        shift = this.scale.currentShift;
+
+        if (direction == "out") {
+          shift > 0 && shift--;
+        } else {
+          shift < lastShift && shift++;
+        }
+      }
+
+      this.scale.currentShift = shift;
+
+      return scaleSet[shift];
+    };
+
+    function Datamap() {
+    	this.$container = $("#container");
+    	this.instance = new Datamaps({
+        scope: 'world',
+        element: this.$container.get(0),
+        projection: 'mercator',
+        setProjection: function(element) {
+
+    var projection = d3.geo.mercator()
+      .center([30, 20])
+      .scale(element.offsetWidth / element.offsetHeight * 75)
+      .translate([element.offsetWidth / 2, element.offsetHeight / 2]);
+    var path = d3.geo.path()
+      .projection(projection);
+
+    return {path: path, projection: projection};
+  },
+        geographyConfig: {
+          highlightOnHover: false,
+          popupOnHover: false,
+          borderColor: '#bfbfb6'
+        },
+        fills: {
+          defaultFill: '#ddddd2',
+          "Economías más ricas del mundo": '#0B9CDA',
+          "Países que más acogen refugiados": '#630235',
+          "Número de refugiados acogidos": '#FF1D34'
+        },
+        bubblesConfig: {
+          borderWidth: 1,
+          borderColor: '#fff',
+          fillOpacity: .3,
+          highlightFillColor: '#FF1D34',
+          highlightFillOpcacity: .75,
+          highlightBorderColor: '#FF1D34',
+        },
+        data: {
+          'USA': { fillKey: "Economías más ricas del mundo" },
+          'FRA': { fillKey: "Economías más ricas del mundo" },
+          'DEU': { fillKey: "Economías más ricas del mundo" },
+          'CHN': { fillKey: "Economías más ricas del mundo" },
+          'GBR': { fillKey: "Economías más ricas del mundo" },
+          'JPN': { fillKey: "Economías más ricas del mundo" },
+          'TUR': { fillKey: 'Países que más acogen refugiados' },
+          'PAK': { fillKey: 'Países que más acogen refugiados' },
+          'LBN': { fillKey: 'Países que más acogen refugiados' },
+          'IRN': { fillKey: 'Países que más acogen refugiados' },
+          'UGA': { fillKey: 'Países que más acogen refugiados' },
+          'ETH': { fillKey: 'Países que más acogen refugiados' },
+
+        },
+        done: this._handleMapReady.bind(this)
+    	});
+      this.instance.legend();
+
+      this.bubbleData = [
+        {
+          latitude: 40,
+          longitude: -102,
+          fillKey: 'Número de refugiados acogidos',
+          radius: '5',
+          country: 'Estados Unidos',
+          refugees: '272,959',
+          asylums: '542,649',
+          description: "Estados Unidos es el país más grande con reubicación de refugiados en el mundo. Proveía un exitoso programa que <strong>ahora se encuentra gravemente amenazado, ante los recientes movimientos contra refugiados</strong>. En marzo 2017, <strong>el presidente de Estados Unidos, Donald Trump firmó una prohibición de migración y refugio</strong>, que no permite la entrada de seis países predominantemente musulmanes para viajar legalmente a los Estados Unidos."
+        },
+        {
+          centered: 'DEU',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '9',
+          country: 'Alemania',
+          refugees: '669,482',
+          asylums: '587,346',
+          description: "Alemania no ha sido tradicionalmente un país de acogida, pero ha recibido a un elevado número de refugiados sirios desde que estos comenzaran a llegar en 2015. En el 2016 fue <strong>el país número uno en recepción de asilo</strong>. Con 43 570 refugiados reubicados, en 2016, <strong>acogió al 118% de las personas que le correspondería acoger</strong>. También ha implemementado políticas de integración como cursos de idiomas para trabajadores."
+        },
+        {
+          centered: 'CHN',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '5',
+          country: 'China',
+          refugees: '317,255',
+          asylums: '668',
+          description: "Aunque China acoge a 300.000 refugiados vietnamitas, quienes son integrados en la sociedad y que en la practica reciben la protección del gobierno, Este país ha <strong>aceptado muy pocos refugiados sirios</strong>. Las autoridades Chinas sostienen son los países occidentales los responsables de las crisis que obligan a la gente a migrar y deberían ser estos países los responsables de lidiar con los refugiados."
+        },
+        {
+          centered: 'FRA',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '5',
+          country: 'Francia',
+          refugees: '304,546',
+          asylums: '62,771',
+          description: "En 2016, Francia fue el quinto mayor receptor de solicitudes de asilo, detrás de Alemania, Estados Unidos, Italia y Turquía. Ese mismo año, acogió  a 1.800 refugiados sirios,<strong> mientras que según sus recursos podría albergar a 25.926</strong>. Calais ha sido durante mucho tiempo un lugar de tensión en Francia, ya que muchos refugiados e inmigrantes buscan cruzar el eurotúnel que sale hacia el Reino Unido."
+        },
+        {
+          centered: 'GBR',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '5',
+          country: 'Reino Unido',
+          refugees: '118,995',
+          asylums: '46,784',
+          description: "En septiembre 2015 en Reino Unido anunció que expandiría su esquema de acogida para refugiados  para beneficiar a 20,000 sirios en el 2020.De acuerdo a las últimas estadísticas, un total de 7,307 de refugiados sirios han sido reubicados, desde que el esquema empezó en 2014. En el 2016 <strong>solo ha acogido al 18% de lo que le correspondería acoger</strong> con una poco menos de 4.000 personas."
+        },
+        {
+          centered: 'JPN',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '5',
+          country: 'Japón',
+          refugees: '2,514',
+          asylums: '18,801',
+          description: "A pesar del incremento continuo en aplicaciones de refugio en los últimos 10 años, el reconocimiento del estatus de refugiado a permanecido muy bajo en Japón, <strong>con menos de 60 refugiados reconocidos al años</strong> desde 2006. Este país tiene una política de refugiados muy estricta, que de acuerdo a la Asociación japonesa de refugiados, prioriza el control migratorio antes que la protección de refugiados."
+        },
+        {
+          centered: 'TUR',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '40',
+          country: 'Turquía',
+          refugees: '2,869,421',
+          asylums: '245,955',
+          description: "<strong>Turquía es el país del mundo que más refugiados acoge: 2,9 millones de personas.</strong> En marzo 2016 gobiernos europeos y Turquía permitieron un controversial trato donde, cualquier persona que arribará de manera de ilegal a Grecia, incluidos los solicitantes de asilo,  serían retornados a Turquía a cambio de fondos de la Unión Europea."
+        },
+        {
+          centered: 'PAK',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '18',
+          country: 'Pakistan',
+          refugees: '1,352,560',
+          asylums: '4,856',
+          description: ''
+        },
+        {
+          centered: 'LBN',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '14',
+          country: 'Líbano',
+          refugees: '1,021,969',
+          asylums: '13,745',
+          description: "<strong>Uno de cada seis habitantes del Líbano es refugiado.</strong> Teniendo en cuenta su población, el Líbano continúa siendo <strong>el país que mayor número de refugiados acoge</strong>. Jordania (1 de cada 11) y Turquía (1 de cada 28) ocupan el segundo y tercer puesto respectivamente. Políticas gubernamentales y recursos limitados, impiden una adecuada respuesta a la afluencia de refugiados."
+        },
+        {
+          centered: 'IRN',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '13',
+          country: 'Iran',
+          refugees: '979,435',
+          asylums: '91',
+          description: ''
+        },
+        {
+          centered: 'UGA',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '13',
+          country: 'Uganda',
+          refugees: '940,835',
+          asylums: '41,880',
+          description: "Uganda actualmente acoge a <strong>1,3 millones de refugiados</strong> , una cifra que se ha <strong>duplicado durante el último año</strong> tras recibir a un millón de personas que ha huido del conflicto en Sudán del Sur. La mayor parte de estos refugiados (el 86%) son mujeres, niñas y niños que necesitan apoyo prioritario para mantenerse a salvo de violaciones, violencia, tortura, hambre y abandono."
+        },
+        {
+          centered: 'ETH',
+          fillKey: 'Número de refugiados acogidos',
+          radius: '11',
+          country: 'Etiopía',
+          refugees: '791,631',
+          asylums: '1,964',
+          description: "África oriental está sufriendo una catastrófica sequía que ha provocado el desplazamiento de muchas de las personas afectadas, lo que ha incrementado la presión sobre las comunidades de acogida. Con más de 790.000 refugiados, actualmente <strong>Etiopía es uno de los países africanos que más refugiados acoge</strong>."
+        },
+      ];
+
+    }
+
+    Datamap.prototype._handleMapReady = function(datamap) {
+    	this.zoom = new Zoom({
+      	$container: this.$container,
+      	datamap: datamap
+      });
+    };
+
+    var map = new Datamap();
+    map.instance.bubbles(map.bubbleData, {
+      popupTemplate: function (geo, data) {
+        return `<div class="hoverinfo"><h1>${data.country}</h1><div class="data"><span class="label">Refugiados:</span><span class="value">${data.refugees}</span></div><div class="data"><span class="label">Solicitantes de asilo:</span><span class="value">${data.asylums}</span></div><p>${data.description}</p></div>`;
+      }
+    });
+  });
+  </script>
+
+    <div style="position: relative; width: 100%; padding-top: 56.25%;">
+      <div id="container" style="position: absolute; width: 100%; height: 100%; top: 0; left: 0;"></div>
+      <div class="zoom"><button class="zoom-button" data-zoom="reset" id="zoom-reset">0</button><button class="zoom-button" data-zoom="in">+</button><button class="zoom-button" data-zoom="out">-</button><div id="zoom-info"></div></div>
+    </div>
+    <p class="source">Source: UNHCR</p>
+
+    <style type="text/css">
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      #container {
+        background: #fafaed;
+      }
+      .hoverinfo {
+        max-width: 40em;
+        padding: 1.3em;
+        color: #545454;
+        border: 0px none;
+        border-bottom: 3px #cbc8be solid;
+        box-shadow: none;
+        background: rgba(255, 255, 255, .9);
+        font-size: .75em;
+        font-weight: normal;
+      }
+      .hoverinfo h1 {
+        color: #0C884A;
+        font-size: 1.5em;
+        font-weight: bold;
+        padding: 0 0 .5em 0;
+        margin: 0;
+      }
+      .hoverinfo p {
+        padding: 0;
+        margin: 1em 0 0 0;
+      }
+
+      .data {
+        display: block;
+        width: 100%;
+      }
+      .data .label {
+        font-weight: bold;
+        color: #333;
+        text-align: left;
+      }
+      .data .value {
+        display: inline-block;
+        padding-left: .5em;
+      }
+
+      .datamaps-legend {
+        position: absolute;
+        bottom: 1em;
+        left: 1em;
+        padding: 1em;
+        padding-top: 0em;
+        background: rgba(255, 255, 255, .75);
+        border-radius: .5em;
+      }
+
+      .datamaps-legend dl {
+        margin: .5em 0;
+      }
+
+      .datamaps-legend dt {
+        clear: left;
+      }
+      .datamaps-legend dt, .datamaps-legend dd {
+        margin-top: .3em;
+     }
+
+      .datamaps-bubble:hover{
+        cursor: pointer;
+      }
+
+      .zoom {
+        position: absolute;
+        bottom: .8em;
+        right: 1em;
+        padding: .75em 1em;
+        background: rgba(255, 255, 255, .75);
+        border-radius: .5em;
+      }
+
+      .zoom button {
+        display: block;
+        clear: both;
+        width: 2.5em;
+        background: #cbc8be;
+        border: 0px none;
+        border-bottom: 1px #ababa2 solid;
+        margin: .25em 0;
+        padding: .25em;
+        font-weight: bold;
+        color: #545454;
+      }
+
+      .zoom #zoom-info, .zoom #zoom-reset {
+        display: none;
+      }
+
+      .source {
+        text-align: right;
+        font-size: .7rem;
+        color: #a2a29a;
+        margin: .5em 0 1em 0;
+      }
+    </style>
+
+</body>
+</html>
